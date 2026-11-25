@@ -2,10 +2,10 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title> Pa la muchacha Naomi♥</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>pa la muchacha Naomi ♥</title>
   <style>
-    /* Full-screen dark terminal aesthetic with zero distractions */
+    /* Reset base y bloqueo de scroll para experiencia a pantalla completa */
     *, *::before, *::after {
       box-sizing: border-box;
       margin: 0;
@@ -17,36 +17,98 @@
       height: 100%;
       overflow: hidden;
       background-color: #09090b;
-      user-select: none;
-      -webkit-user-select: none;
+      color: #ffffff;
+      -webkit-font-smoothing: antialiased;
+      touch-action: none;
     }
 
-    canvas {
-      display: block;
-      width: 100vw;
+    /* Contenedor principal anclado al viewport real */
+    .app {
+      position: fixed;
+      inset: 0;
+      width: 100%;
       height: 100vh;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
       background-color: #09090b;
+      overflow: hidden;
+    }
+
+    /* Escenario flexible que aloja el canvas ASCII al 100% del espacio disponible */
+    .stage {
+      flex: 1;
+      width: 100%;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background-color: #09090b;
+    }
+
+    /* Barra inferior dedicada para el mensaje, siempre visible sobre barras de móvil */
+    .message-bar {
+      flex-shrink: 0;
+      width: 100%;
+      text-align: center;
+      padding: 8px 16px calc(22px + env(safe-area-inset-bottom));
+      font-family: 'Courier New', Courier, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(18px, 5vw, 24px);
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      user-select: none;
+      -webkit-user-select: none;
+      z-index: 2;
+      line-height: 1.2;
+    }
+
+    /* Cada carácter del mensaje se anima de forma independiente */
+    .msg-char {
+      display: inline-block;
+      opacity: 0;
+      transform: translateY(10px);
+      will-change: opacity, transform, color;
     }
   </style>
 </head>
 <body>
-  <!-- Full-viewport HTML5 Canvas for crisp monospace ASCII rendering -->
-  <canvas id="ascii-canvas" aria-label="3D ASCII Flower Bouquet Animation"></canvas>
+  <!-- Contenedor principal adaptable a visualViewport en iOS/Android y escritorio -->
+  <div class="app" id="app">
+    <!-- Escenario del ramo 3D en ASCII -->
+    <div class="stage" id="stage">
+      <canvas id="canvas" aria-label="Ramo de flores 3D en ASCII"></canvas>
+    </div>
+    <!-- Barra fija del mensaje inferior con degradado ANSI animado -->
+    <div class="message-bar" id="message-bar" aria-label="for you"></div>
+  </div>
 
   <script>
     (function () {
       "use strict";
 
       // =========================================================================
-      // 1. CONSTANTS & COLOR PALETTES (Faithful port from original Python script)
+      // 1. CONSTANTES DEL MOTOR 3D Y PALETAS ANSI ORIGINALES
       // =========================================================================
       const SPIN_SPEED = 0.6;
       const TILT = 0.30;
       const CAM_DIST = 4.0;
-      const MESSAGE = "para la muchacha Naomi ♥";
-      const HINT = "Con cariño del conejo";
-      const NUM_HEARTS = 18;
       const PIVOT_Y = 0.2;
+      const MESSAGE = "Con cariño para la muchacha Naomi ♥ <br> att El conejo";
+      const NUM_HEARTS = 18;
+
+      // Parámetros de animación de aparición de abajo hacia arriba
+      const REVEAL_DURATION = 3.2;
+      const Y_MIN = -0.55;
+      const Y_MAX = 0.92;
+      const MSG_START_T = 2.3;
+      const MSG_END_T = 3.5;
 
       const WHITE = [244, 248, 251, 254, 255, 231];
       const PINK = [125, 162, 168, 205, 211, 218, 225];
@@ -65,7 +127,7 @@
       const SHADE = ".:-=+*%@";
       const PETAL_SHADE = "+*#%";
 
-      // Directional light vector L = normalize(-0.45, 0.6, 0.66)
+      // Vector de luz direccional normalizado (-0.45, 0.6, 0.66)
       const _L = [-0.45, 0.6, 0.66];
       const _Ln = Math.sqrt(_L[0] * _L[0] + _L[1] * _L[1] + _L[2] * _L[2]);
       const LX = _L[0] / _Ln;
@@ -78,61 +140,74 @@
         { petals: RED, center: DARK_CENTER, nPet: 6 },
         { petals: PURPLE, center: GOLD_CENTER, nPet: 7 },
         { petals: YELLOW, center: DARK_CENTER, nPet: 12 },
-        { petals: ORANGE, center: DARK_CENTER, nPet: 9 },
+        { petals: ORANGE, center: DARK_CENTER, nPet: 9 }
       ];
       const TULIP_COLORS = [RED, PINK, YELLOW];
 
       // =========================================================================
-      // 2. XTERM 256-COLOR ANSI INDEX TO CSS RGB CONVERTER
+      // 2. CONVERSOR EXACTO ANSI XTERM-256 (0-255) A RGB(r,g,b)
       // =========================================================================
-      const ANSI_PALETTE = new Array(256);
+      const ANSI_RGB = new Array(256);
 
-      (function initAnsiPalette() {
-        // 0-15: Standard 16 xterm system colors
-        const standard16 = [
+      (function buildAnsiTable() {
+        // 0-15: Colores estándar xterm
+        const std16 = [
           [0, 0, 0],       [128, 0, 0],     [0, 128, 0],     [128, 128, 0],
           [0, 0, 128],     [128, 0, 128],   [0, 128, 128],   [192, 192, 192],
           [128, 128, 128], [255, 0, 0],     [0, 255, 0],     [255, 255, 0],
           [0, 0, 255],     [255, 0, 255],   [0, 255, 255],   [255, 255, 255]
         ];
         for (let i = 0; i < 16; i++) {
-          const [r, g, b] = standard16[i];
-          ANSI_PALETTE[i] = `rgb(${r},${g},${b})`;
+          ANSI_RGB[i] = `rgb(${std16[i][0]},${std16[i][1]},${std16[i][2]})`;
         }
 
-        // 16-231: 6x6x6 RGB color cube
-        const levels = [0, 95, 135, 175, 215, 255];
+        // 16-231: Cubo RGB 6x6x6
+        const cube = [0, 95, 135, 175, 215, 255];
         for (let i = 16; i <= 231; i++) {
-          const idx = i - 16;
-          const r = levels[Math.floor(idx / 36)];
-          const g = levels[Math.floor((idx % 36) / 6)];
-          const b = levels[idx % 6];
-          ANSI_PALETTE[i] = `rgb(${r},${g},${b})`;
+          const n = i - 16;
+          const r = cube[Math.floor(n / 36)];
+          const g = cube[Math.floor((n % 36) / 6)];
+          const b = cube[n % 6];
+          ANSI_RGB[i] = `rgb(${r},${g},${b})`;
         }
 
-        // 232-255: 24-step grayscale ramp
+        // 232-255: Escala de grises de 24 niveles
         for (let i = 232; i <= 255; i++) {
           const v = 8 + 10 * (i - 232);
-          ANSI_PALETTE[i] = `rgb(${v},${v},${v})`;
+          ANSI_RGB[i] = `rgb(${v},${v},${v})`;
         }
       })();
 
       // =========================================================================
-      // 3. SEEDED PRNG (Mulberry32) & 3D VECTOR HELPERS
+      // 3. PRNG DETERMINISTA (SEMILLA 21), CURVAS DE EASING Y ÁLGEBRA 3D
       // =========================================================================
       function createSeededRandom(seed) {
-        let a = seed >>> 0;
+        let state = seed >>> 0;
         return {
           random() {
-            a = (a + 0x6D2B79F5) >>> 0;
-            let t = Math.imul(a ^ (a >>> 15), 1 | a);
+            state = (state + 0x6D2B79F5) >>> 0;
+            let t = Math.imul(state ^ (state >>> 15), 1 | state);
             t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
             return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
           },
-          uniform(min, max) {
-            return min + (max - min) * this.random();
+          uniform(a, b) {
+            return a + (b - a) * this.random();
           }
         };
+      }
+
+      function clamp(val, min, max) {
+        return val < min ? min : val > max ? max : val;
+      }
+
+      function easeOutCubic(x) {
+        return 1 - Math.pow(1 - x, 3);
+      }
+
+      function easeOutBack(x) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
       }
 
       function norm(v) {
@@ -153,7 +228,7 @@
       }
 
       // =========================================================================
-      // 4. 3D SCENE BUILDER (Deterministic geometry ported from build_scene)
+      // 4. CONSTRUCCIÓN DE LA ESCENA 3D (RÉPLICA FIEL DE build_scene)
       // =========================================================================
       function buildScene() {
         const rnd = createSeededRandom(21);
@@ -166,7 +241,7 @@
         const golden = Math.PI * (3 - Math.sqrt(5));
         const heads = [];
 
-        // 10 flower heads arranged in a golden angle spiral dome
+        // 10 cabezas florales distribuidas en espiral áurea
         for (let i = 0; i < N; i++) {
           const el = (88 - 60 * Math.sqrt(i / (N - 1))) * (Math.PI / 180);
           const az = i * golden;
@@ -183,17 +258,16 @@
         const flowers = [];
         let discI = 0;
 
-        // Stems and flower head descriptors
+        // Tallos de 70 puntos + descriptores de flores (disco y tulipanes)
         for (let idx = 0; idx < heads.length; idx++) {
           const { pos, axis } = heads[idx];
           const base = add(pos, axis, -0.03);
           for (let j = 0; j < 70; j++) {
             const t = j / 69;
-            const px = base[0] + (neck[0] - base[0]) * t;
-            const py = base[1] + (neck[1] - base[1]) * t;
-            const pz = base[2] + (neck[2] - base[2]) * t;
             pts.push({
-              x: px, y: py, z: pz,
+              x: base[0] + (neck[0] - base[0]) * t,
+              y: base[1] + (neck[1] - base[1]) * t,
+              z: base[2] + (neck[2] - base[2]) * t,
               nx: axis[0], ny: 0.0, nz: axis[2],
               pal: GREENS, tone: -0.15, twoSided: true, override: null
             });
@@ -228,7 +302,7 @@
           }
         }
 
-        // 8 curved leaves around the bouquet collar with central rib shading
+        // 8 hojas curvadas con nervadura central (rib = -0.25)
         for (let i = 0; i < 8; i++) {
           const a = ((i + 0.4) / 8) * 2 * Math.PI;
           const c = Math.cos(a);
@@ -246,20 +320,18 @@
             for (let wi = -5; wi <= 5; wi++) {
               const w = wi / 5;
               const curl = 0.025 * w * w;
-              const px = base[0] + d[0] * L * t + side[0] * W * sinPiT * w + n[0] * curl;
-              const py = base[1] + d[1] * L * t - 0.10 * t * t + n[1] * curl;
-              const pz = base[2] + d[2] * L * t + side[2] * W * sinPiT * w + n[2] * curl;
-              const rib = wi === 0 ? -0.25 : 0.0;
               pts.push({
-                x: px, y: py, z: pz,
+                x: base[0] + d[0] * L * t + side[0] * W * sinPiT * w + n[0] * curl,
+                y: base[1] + d[1] * L * t - 0.10 * t * t + n[1] * curl,
+                z: base[2] + d[2] * L * t + side[2] * W * sinPiT * w + n[2] * curl,
                 nx: n[0], ny: n[1], nz: n[2],
-                pal: GREENS, tone: rib, twoSided: true, override: null
+                pal: GREENS, tone: wi === 0 ? -0.25 : 0.0, twoSided: true, override: null
               });
             }
           }
         }
 
-        // Wrapping paper cone with top ruffle and folds
+        // Papel envoltorio cónico (50 anillos, pliegues y borde superior ondulado)
         const y0 = -0.20, y1 = 0.30, r0 = 0.06, r1 = 0.36;
         const kSlope = (r1 - r0) / (y1 - y0);
         const rings = 50;
@@ -285,7 +357,7 @@
           }
         }
 
-        // 7 bottom stems emerging beneath the wrap
+        // 7 tallos inferiores saliendo bajo el papel (y de -0.20 a -0.50)
         for (let i = 0; i < 7; i++) {
           const a = (i / 7) * 2 * Math.PI;
           const ca = Math.cos(a);
@@ -304,7 +376,7 @@
           }
         }
 
-        // Ribbon band, bow loops, tails, and center knot
+        // Lazo alrededor del cuello (by = -0.12), moño, cintas colgantes y nudo "@"
         const by = -0.12;
         const br = r0 + kSlope * (by - y0) + 0.01;
         for (let j = 0; j < 90; j++) {
@@ -356,7 +428,7 @@
           });
         }
 
-        // 90 baby's breath filler blossoms
+        // 90 puntos baby's breath parpadeantes
         const babies = [];
         for (let i = 0; i < 90; i++) {
           const a = rnd.random() * 2 * Math.PI;
@@ -370,7 +442,7 @@
           });
         }
 
-        // 30 orbiting ambient sparkles
+        // 30 destellos ambientales orbitando
         const sparkles = [];
         for (let i = 0; i < 30; i++) {
           const a = rnd.random() * 2 * Math.PI;
@@ -388,7 +460,7 @@
       }
 
       // =========================================================================
-      // 5. FLOATING HEARTS SIMULATION
+      // 5. CORAZONES FLOTANTES EN EL FONDO
       // =========================================================================
       function randomChoice(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
@@ -416,51 +488,78 @@
       }
 
       // =========================================================================
-      // 6. CANVAS GRID & RENDERING ENGINE
+      // 6. REFERENCIAS DOM, BARRA DE MENSAJE Y REDIMENSIONAMIENTO RESPONSIVE
       // =========================================================================
-      const canvas = document.getElementById("ascii-canvas");
+      const appEl = document.getElementById("app");
+      const stageEl = document.getElementById("stage");
+      const canvas = document.getElementById("canvas");
       const ctx = canvas.getContext("2d", { alpha: false });
+      const messageBarEl = document.getElementById("message-bar");
 
-      const FONT_STACK = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
+      const FONT_STACK = "'Courier New', Courier, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
 
-      let cols = 80;
-      let rows = 36;
-      let cellW = 8;
-      let cellH = 16;
+      // Crear un <span> por carácter para animar color ANSI y entrada suave
+      const msgSpans = [];
+      (function initMessageBar() {
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < MESSAGE.length; i++) {
+          const span = document.createElement("span");
+          span.className = "msg-char";
+          span.textContent = MESSAGE[i] === " " ? "\u00A0" : MESSAGE[i];
+          frag.appendChild(span);
+          msgSpans.push(span);
+        }
+        messageBarEl.appendChild(frag);
+      })();
+
+      let stageW = 300;
+      let stageH = 300;
+      let cols = 60;
+      let rows = 30;
+      let cellW = 6;
+      let cellH = 12;
       let offsetX = 0;
       let offsetY = 0;
-      let fontSize = 14;
 
-      // Flat reusable buffers to avoid per-frame allocations
+      // Buffers reutilizables para evitar recolección de basura por frame
       let chars = [];
       let colors = new Int16Array(0);
       let zbuf = new Float32Array(0);
 
-      function resize() {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
+      function syncViewportAndResize() {
+        // Sincronizar altura exacta con visualViewport en iOS Safari / Android Chrome
+        if (window.visualViewport) {
+          appEl.style.height = `${Math.floor(window.visualViewport.height)}px`;
+        } else {
+          appEl.style.height = "";
+        }
 
-        canvas.width = Math.floor(vw * dpr);
-        canvas.height = Math.floor(vh * dpr);
+        const rect = stageEl.getBoundingClientRect();
+        stageW = Math.max(1, Math.floor(rect.width));
+        stageH = Math.max(1, Math.floor(rect.height));
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(stageW * dpr);
+        canvas.height = Math.floor(stageH * dpr);
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        // Choose an ideal monospace font size for ~80-130 cols and ~38-55 rows
-        fontSize = Math.max(8, Math.min(16, Math.min(vw / 56, vh / 50)));
+        // Tamaño de fuente dinámico entre 8px y 14px para buena resolución en móvil y PC
+        const targetFont = Math.min(stageW / 44, stageH / 34);
+        const fontSize = clamp(targetFont, 8, 14);
+
         ctx.font = `${fontSize}px ${FONT_STACK}`;
         ctx.textBaseline = "top";
 
-        const measuredW = ctx.measureText("M").width;
-        cellW = Math.max(4.5, measuredW);
-        // Classic 2:1 terminal cell aspect ratio so sx_scale = scale * 2.0 stays true
+        const measured = ctx.measureText("M").width;
+        cellW = Math.max(4.5, measured);
+        // Relación 2:1 clásica de terminal (empareja sx_scale = scale * 2.0)
         cellH = cellW * 2.0;
 
-        cols = Math.max(24, Math.floor(vw / cellW));
-        rows = Math.max(16, Math.floor(vh / cellH));
+        cols = Math.max(20, Math.floor(stageW / cellW));
+        rows = Math.max(12, Math.floor(stageH / cellH));
 
-        // Center the character grid seamlessly in the viewport
-        offsetX = (vw - cols * cellW) * 0.5;
-        offsetY = (vh - rows * cellH) * 0.5;
+        offsetX = (stageW - cols * cellW) * 0.5;
+        offsetY = (stageH - rows * cellH) * 0.5;
 
         const total = cols * rows;
         chars = new Array(total);
@@ -468,25 +567,57 @@
         zbuf = new Float32Array(total);
       }
 
+      // =========================================================================
+      // 7. ACTUALIZACIÓN DEL MENSAJE INFERIOR (FADE + SLIDE + ONDA ANSI)
+      // =========================================================================
+      function updateMessageBar(t) {
+        const shift = Math.floor(t * 6);
+        const len = msgSpans.length;
+        const totalWindow = MSG_END_T - MSG_START_T;
+        const charWindow = totalWindow * 0.45;
+        const stagger = len > 1 ? (totalWindow - charWindow) / (len - 1) : 0;
+
+        for (let i = 0; i < len; i++) {
+          const span = msgSpans[i];
+          const ansiIdx = MSG_COLORS[(i + shift) % MSG_COLORS.length];
+          span.style.color = ANSI_RGB[ansiIdx];
+
+          if (t < MSG_START_T) {
+            span.style.opacity = "0";
+            span.style.transform = "translateY(10px)";
+          } else {
+            const localT = (t - (MSG_START_T + i * stagger)) / charWindow;
+            const p = clamp(localT, 0, 1);
+            const eased = easeOutCubic(p);
+            span.style.opacity = eased.toFixed(3);
+            span.style.transform = `translateY(${((1 - eased) * 10).toFixed(2)}px)`;
+          }
+        }
+      }
+
+      // =========================================================================
+      // 8. RENDERIZADO DE FRAME 3D ASCII + REVELADO DE ABAJO HACIA ARRIBA
+      // =========================================================================
       function renderFrame(scene, t, hearts) {
         const { pts, flowers, babies, sparkles } = scene;
         const total = cols * rows;
 
-        // Clear character & depth buffers
         for (let i = 0; i < total; i++) {
           chars[i] = " ";
           colors[i] = 0;
           zbuf[i] = -1e9;
         }
 
-        const viewRows = rows - 2;
-        const scale = Math.max(1.0, Math.min((viewRows - 2) / 1.45, (cols - 2) / 2.7));
+        // Proyección y centrado dentro de .stage
+        const scale = Math.max(1.0, Math.min((rows - 2) / 1.55, (cols - 2) / 2.65));
         const sxScale = scale * 2.0;
         const cx = cols * 0.5;
-        // Vertically center nicely on tall portrait viewports while matching Python on landscape
-        const bouquetHeight = 1.45 * scale;
-        const topPad = Math.max(1.0, (viewRows - bouquetHeight) * 0.5);
-        const cy = topPad + 0.78 * scale;
+        const cy = rows * 0.54;
+
+        // Onda ascendente de revelación (de abajo hacia arriba)
+        const revealProgress = easeOutCubic(Math.min(1, t / REVEAL_DURATION));
+        const yCutoff = Y_MIN + (Y_MAX - Y_MIN) * revealProgress;
+        const isRevealing = t < REVEAL_DURATION;
 
         const ang = t * SPIN_SPEED;
         const ca = Math.cos(ang);
@@ -495,7 +626,7 @@
         const st = Math.sin(TILT);
 
         function plot(col, row, z, ch, color) {
-          if (row >= 0 && row < viewRows && col >= 0 && col < cols) {
+          if (row >= 0 && row < rows && col >= 0 && col < cols) {
             const idx = row * cols + col;
             if (z > zbuf[idx]) {
               zbuf[idx] = z;
@@ -505,21 +636,23 @@
           }
         }
 
-        // 1. Background floating hearts
+        // 1. Corazones flotantes de fondo
         for (let i = 0; i < hearts.length; i++) {
           const h = hearts[i];
           const rawCol = Math.trunc((h.x + 0.015 * Math.sin(t * 1.2 + h.phase)) * cols);
           const col = ((rawCol % cols) + cols) % cols;
-          const row = Math.trunc(h.y * viewRows);
+          const row = Math.trunc(h.y * rows);
           plot(col, row, -50, "♥", h.color);
         }
 
-        // 2. 3D Point cloud (stems, leaves, wrapping paper, ribbon, bow)
+        // 2. Nube de puntos 3D (tallos, hojas, papel, lazo, moño)
         const shadeLen = SHADE.length;
         const petalShadeLen = PETAL_SHADE.length;
 
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
+          if (p.y > yCutoff) continue;
+
           const xr = p.x * ca - p.z * sa;
           const zr = p.x * sa + p.z * ca;
           const yp = p.y - PIVOT_Y;
@@ -541,8 +674,13 @@
           }
 
           let b = 0.25 + 0.75 * Math.max(0.0, dot) + p.tone;
-          if (b > 0.999) b = 0.999;
-          else if (b < 0.0) b = 0.0;
+
+          // Brillo sutil en la frontera ascendente de materialización
+          if (isRevealing && (yCutoff - p.y) < 0.055) {
+            b += 0.35;
+          }
+
+          b = clamp(b, 0.0, 0.999);
 
           let ch;
           if (p.override === "P") {
@@ -553,14 +691,19 @@
             ch = SHADE[Math.floor(b * shadeLen)];
           }
 
-          const palColor = p.pal[Math.floor(b * p.pal.length)];
-          plot(col, row, zt, ch, palColor);
+          plot(col, row, zt, ch, p.pal[Math.floor(b * p.pal.length)]);
         }
 
-        // 3. Procedural billboard flowers (disc daisies & tulips)
+        // 3. Flores procedurales (margaritas y tulipanes) con brote easeOutBack
         for (let i = 0; i < flowers.length; i++) {
           const fl = flowers[i];
           const x = fl.pos[0], y = fl.pos[1], z = fl.pos[2];
+
+          const rawBloom = clamp((yCutoff - (y - 0.06)) / 0.22, 0, 1);
+          if (rawBloom <= 0.001) continue;
+
+          const bloomScale = Math.max(0.05, easeOutBack(rawBloom));
+          const currentR = fl.R * bloomScale;
 
           const xr = x * ca - z * sa;
           const zr = x * sa + z * ca;
@@ -571,10 +714,12 @@
 
           const fx = cx + xr * f * sxScale;
           const fy = cy - yt * f * scale;
-          const rx = fl.R * f * sxScale;
-          const ry = fl.R * f * scale;
+          const rx = currentR * f * sxScale;
+          const ry = currentR * f * scale;
 
-          const dim = -0.4 * (1 - Math.min(1.0, Math.max(0.0, (zt + 0.6) / 1.2)));
+          if (rx < 0.1 || ry < 0.1) continue;
+
+          const dim = -0.4 * (1 - clamp((zt + 0.6) / 1.2, 0.0, 1.0));
           const rot = fl.seed + ang * 0.7;
 
           const rowStart = Math.trunc(fy - ry) - 1;
@@ -592,29 +737,23 @@
                 if (s > 1.0) continue;
 
                 if (s < 0.3) {
-                  let b = 0.55 - 0.35 * dx - 0.35 * dy + dim;
-                  if (b > 0.999) b = 0.999;
-                  else if (b < 0.0) b = 0.0;
-                  const ch = s < 0.17 ? "@" : "o";
-                  const colCode = fl.cpal[Math.floor(b * fl.cpal.length)];
-                  plot(col, row, zt + 0.06, ch, colCode);
+                  const b = clamp(0.55 - 0.35 * dx - 0.35 * dy + dim, 0.0, 0.999);
+                  plot(col, row, zt + 0.06, s < 0.17 ? "@" : "o", fl.cpal[Math.floor(b * fl.cpal.length)]);
                   continue;
                 }
 
                 const ph = Math.atan2(dy, dx);
-                const reach = 0.32 + 0.68 * Math.pow(Math.abs(Math.cos((fl.nPet * (ph + rot)) * 0.5)), 0.7);
+                const reach = 0.32 + 0.68 * Math.pow(Math.abs(Math.cos(fl.nPet * (ph + rot) * 0.5)), 0.7);
                 if (s > reach) continue;
 
                 const edge = s > reach - 0.14 ? -0.22 : 0.0;
-                let b = 0.62 - 0.22 * dx - 0.28 * dy + 0.12 * s + edge + dim;
-                if (b > 0.999) b = 0.999;
-                else if (b < 0.0) b = 0.0;
-
-                const ch = PETAL_SHADE[Math.floor(b * petalShadeLen)];
-                const colCode = fl.pal[Math.floor(b * fl.pal.length)];
-                plot(col, row, zt + 0.04 * (1 - s), ch, colCode);
+                const b = clamp(0.62 - 0.22 * dx - 0.28 * dy + 0.12 * s + edge + dim, 0.0, 0.999);
+                plot(
+                  col, row, zt + 0.04 * (1 - s),
+                  PETAL_SHADE[Math.floor(b * petalShadeLen)],
+                  fl.pal[Math.floor(b * fl.pal.length)]
+                );
               } else {
-                // Tulip cup silhouette
                 const v = (1 - dy) * 0.5;
                 if (v < 0 || v > 1) continue;
 
@@ -626,21 +765,22 @@
                 if (v > 0.72 + 0.28 * cosTop * cosTop) continue;
 
                 const seam = (Math.abs(Math.abs(xn) - 0.33) < 0.12 && v > 0.3) ? -0.25 : 0.0;
-                let b = 0.55 - 0.3 * xn + 0.1 * v + seam + dim;
-                if (b > 0.999) b = 0.999;
-                else if (b < 0.0) b = 0.0;
-
-                const ch = PETAL_SHADE[Math.floor(b * petalShadeLen)];
-                const colCode = fl.pal[Math.floor(b * fl.pal.length)];
-                plot(col, row, zt + 0.03, ch, colCode);
+                const b = clamp(0.55 - 0.3 * xn + 0.1 * v + seam + dim, 0.0, 0.999);
+                plot(
+                  col, row, zt + 0.03,
+                  PETAL_SHADE[Math.floor(b * petalShadeLen)],
+                  fl.pal[Math.floor(b * fl.pal.length)]
+                );
               }
             }
           }
         }
 
-        // 4. Baby's breath blossoms
+        // 4. Florecitas blancas (baby's breath)
         for (let i = 0; i < babies.length; i++) {
           const b = babies[i];
+          if (b.y > yCutoff) continue;
+
           const xr = b.x * ca - b.z * sa;
           const zr = b.x * sa + b.z * ca;
           const yp = b.y - PIVOT_Y;
@@ -654,9 +794,11 @@
           plot(col, row, zt + 0.02, star ? "*" : "·", star ? 231 : 255);
         }
 
-        // 5. Twinkling ambient sparkles
+        // 5. Destellos brillantes (sparkles)
         for (let i = 0; i < sparkles.length; i++) {
           const sp = sparkles[i];
+          if (sp.y > yCutoff) continue;
+
           const xr = sp.x * ca - sp.z * sa;
           const zr = sp.x * sa + sp.z * ca;
           const yp = sp.y - PIVOT_Y;
@@ -677,34 +819,9 @@
           }
         }
 
-        // 6. Centered animated bottom message ("for you ♥")
-        const mrow = rows - 2;
-        const msgStart = Math.max(0, Math.floor((cols - MESSAGE.length) / 2));
-        const shift = Math.trunc(t * 6);
-        for (let i = 0; i < MESSAGE.length; i++) {
-          const c = msgStart + i;
-          if (c < cols && mrow >= 0) {
-            const idx = mrow * cols + c;
-            chars[idx] = MESSAGE[i];
-            colors[idx] = MSG_COLORS[(i + shift) % MSG_COLORS.length];
-          }
-        }
-
-        // 7. Subtle bottom credit in ANSI color 238
-        const hrow = rows - 1;
-        const hintStart = Math.max(0, Math.floor((cols - HINT.length) / 2));
-        for (let i = 0; i < HINT.length; i++) {
-          const c = hintStart + i;
-          if (c < cols && hrow >= 0) {
-            const idx = hrow * cols + c;
-            chars[idx] = HINT[i];
-            colors[idx] = 238;
-          }
-        }
-
-        // 8. Paint onto Canvas
+        // 6. Dibujo de la grilla ASCII en el Canvas
         ctx.fillStyle = "#09090b";
-        ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+        ctx.fillRect(0, 0, stageW, stageH);
 
         let lastColor = -1;
         for (let r = 0; r < rows; r++) {
@@ -718,7 +835,7 @@
             const colCode = colors[idx];
             if (colCode !== lastColor) {
               lastColor = colCode;
-              ctx.fillStyle = ANSI_PALETTE[colCode] || "#ffffff";
+              ctx.fillStyle = ANSI_RGB[colCode] || "#ffffff";
             }
             ctx.fillText(ch, offsetX + c * cellW, py);
           }
@@ -726,15 +843,19 @@
       }
 
       // =========================================================================
-      // 7. INITIALIZATION & ANIMATION LOOP
+      // 9. INICIALIZACIÓN Y BUCLE DE ANIMACIÓN
       // =========================================================================
       window.onload = function () {
         try {
           const scene = buildScene();
           const hearts = [];
 
-          resize();
-          window.addEventListener("resize", resize, { passive: true });
+          syncViewportAndResize();
+          window.addEventListener("resize", syncViewportAndResize, { passive: true });
+          window.addEventListener("orientationchange", syncViewportAndResize, { passive: true });
+          if (window.visualViewport) {
+            window.visualViewport.addEventListener("resize", syncViewportAndResize, { passive: true });
+          }
 
           const startTime = performance.now();
           let lastTime = startTime;
@@ -746,12 +867,14 @@
 
             updateHearts(hearts, dt);
             renderFrame(scene, elapsed, hearts);
+            updateMessageBar(elapsed);
+
             requestAnimationFrame(animate);
           }
 
           requestAnimationFrame(animate);
         } catch (err) {
-          console.error("Error initializing ASCII bouquet:", err);
+          console.error("Error al iniciar la animación del ramo ASCII:", err);
         }
       };
     })();
